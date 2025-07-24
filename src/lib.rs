@@ -1,8 +1,12 @@
 use log;
 use riptun::TokioTun;
 
+// TODO: config?
+const MTU: usize = 1500;
+
 pub struct Adapter {
-  tun: TokioTun
+  tun: TokioTun,
+  read_buf: [u8; MTU]
 }
 
 impl Adapter {
@@ -40,8 +44,16 @@ impl Adapter {
         output.status.code())).into());
     }
     let adapter = Adapter {
-      tun
+      tun, read_buf: [0x0; MTU]
     };
     Ok(adapter)
+  }
+
+  pub fn tun(&self) -> &TokioTun {
+    &self.tun
+  }
+
+  pub async fn read(&mut self) -> Result<&[u8], std::io::Error> {
+    self.tun.recv(&mut self.read_buf).await.map(|nbytes| &self.read_buf[..nbytes])
   }
 }
