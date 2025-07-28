@@ -6,7 +6,7 @@ const MTU: usize = 1500;
 
 pub struct Adapter {
   tun: TokioTun,
-  read_buf: [u8; MTU]
+  read_buf: tokio::sync::Mutex<[u8; MTU]>
 }
 
 impl Adapter {
@@ -44,7 +44,7 @@ impl Adapter {
         output.status.code())).into());
     }
     let adapter = Adapter {
-      tun, read_buf: [0x0; MTU]
+      tun, read_buf: tokio::sync::Mutex::new([0x0; MTU])
     };
     Ok(adapter)
   }
@@ -53,7 +53,14 @@ impl Adapter {
     &self.tun
   }
 
-  pub async fn read(&mut self) -> Result<&[u8], std::io::Error> {
-    self.tun.recv(&mut self.read_buf).await.map(|nbytes| &self.read_buf[..nbytes])
+  // TODO: can we return a lock of &[u8] to avoid creating vec?
+  pub async fn read(&self) -> Result<Vec<u8>, std::io::Error> {
+    let mut buf = self.read_buf.lock().await;
+    let nbytes = self.tun.recv(&mut buf[..]).await?;
+    Ok(buf[..nbytes].to_vec())
+  }
+
+  pub async fn send(&self, datagram: &[u8]) -> Result<usize, std::io::Error> {
+    self.tun.send(datagram).await
   }
 }
