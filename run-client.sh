@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 
-sudo -E cargo run --example client
+cargo build --bin client && sudo ./target/debug/client
 
 exit 0

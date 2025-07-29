@@ -1,0 +1,4 @@
+log_level = "trace"
+tun_ip = "10.0.0.2/24"
+target_ip = "193.72.79.190/32"
+server_destination = ""
