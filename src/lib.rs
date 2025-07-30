@@ -172,7 +172,8 @@ impl Server {
   pub async fn run(&self, mut transport: Transport, id: PrivateIdentity) {
     let in_destination = transport
       .add_destination(id, DestinationName::new("rns_tun", "server")).await;
-    log::info!("created in destination: {}", in_destination.lock().await.desc.address_hash);
+    let in_destination_hash = in_destination.lock().await.desc.address_hash;
+    log::info!("created in destination: {}", in_destination_hash);
     // send announces
     let announce_loop = async || loop {
       transport.send_announce(&in_destination, None).await;
@@ -193,7 +194,8 @@ impl Server {
     };
     // upstream link data
     let link_loop = async || {
-      let client_destination =
+      // TODO: in link address is the server, can we check the upstream address?
+      let _client_destination =
         match AddressHash::new_from_hex_string(self.config.client_destination.as_str()) {
           Ok(dest) => dest,
           Err(err) => {
@@ -204,7 +206,7 @@ impl Server {
       let mut in_link_events = transport.in_link_events();
       while let Ok(link_event) = in_link_events.recv().await {
         match link_event.event {
-          LinkEvent::Data(payload) => if link_event.address_hash == client_destination {
+          LinkEvent::Data(payload) => if link_event.address_hash == in_destination_hash {
             log::trace!("link {} payload ({})", link_event.id, payload.len());
             match self.tun.send(payload.as_slice()).await {
               Ok(n) => log::trace!("tun sent {n} bytes"),
@@ -214,12 +216,12 @@ impl Server {
               }
             }
           }
-          LinkEvent::Activated => if link_event.address_hash == client_destination {
-            log::debug!("link activated{}", link_event.id);
+          LinkEvent::Activated => if link_event.address_hash == in_destination_hash {
+            log::debug!("link activated {}", link_event.id);
             let mut link_id = link_id.lock().await;
             *link_id = Some(link_event.id);
           }
-          LinkEvent::Closed => if link_event.address_hash == client_destination {
+          LinkEvent::Closed => if link_event.address_hash == in_destination_hash {
             log::debug!("link closed {}", link_event.id)
           }
         }
