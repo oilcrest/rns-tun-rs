@@ -125,7 +125,12 @@ impl Client {
               }
             }
           }
-          _ => {}
+          LinkEvent::Activated => if link_event.address_hash == server_destination {
+            log::debug!("link activated {}", link_event.id);
+          }
+          LinkEvent::Closed => if link_event.address_hash == server_destination {
+            log::debug!("link closed {}", link_event.id);
+          }
         }
       }
     };

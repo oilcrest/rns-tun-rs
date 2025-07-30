@@ -35,7 +35,7 @@ async fn main() {
   // init logging
   env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&config.log_level))
     .init();
-  log::info!("client start");
+  log::info!("client start with upstream server {}", cmd.server);
   // tun adapter
   let client = match rns_tun::Client::new(config) {
     Ok(client) => client,
