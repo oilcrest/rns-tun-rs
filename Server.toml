@@ -1,5 +1,6 @@
 log_level = "trace"
 tun_ip = "10.0.0.1/24"
 client_subnet = "10.0.0.0/24"
-outbound_interface = "wlp3s0"
-client_destination = ""
+outbound_interface = "wlp3s0"   # change to match your interface
+announce_interval_seconds = 1
+client_destination = "a05700f0593d63a92324bcfdcf14e6f4"

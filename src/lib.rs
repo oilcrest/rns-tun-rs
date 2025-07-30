@@ -1,10 +1,15 @@
 use std::process::Command;
+use std::sync::Arc;
+
 use serde::Deserialize;
 use ipnet::IpNet;
 use log;
-use reticulum::destination::link::LinkEvent;
+use reticulum::destination::DestinationName;
+use reticulum::destination::link::{LinkEvent, LinkId};
 use reticulum::hash::AddressHash;
+use reticulum::identity::PrivateIdentity;
 use reticulum::transport::Transport;
+
 use riptun::TokioTun;
 
 // TODO: config?
@@ -41,6 +46,7 @@ pub struct ServerConfig {
   pub tun_ip: IpNet,
   pub client_subnet: IpNet,
   pub outbound_interface: String,
+  pub announce_interval_seconds: usize,
   // TODO: deserialize AddressHash
   pub client_destination: String
 }
@@ -80,16 +86,16 @@ impl Client {
   }
 
   pub async fn run(&self, transport: Transport) {
+    let server_destination =
+      match AddressHash::new_from_hex_string(self.config.server_destination.as_str()) {
+        Ok(dest) => dest,
+        Err(err) => {
+          log::error!("error parsing server destination hash: {err:?}");
+          return
+        }
+      };
     // set up links
     let link_loop = async || {
-      let server_destination =
-        match AddressHash::new_from_hex_string(self.config.server_destination.as_str()) {
-          Ok(dest) => dest,
-          Err(err) => {
-            log::error!("error parsing server destination hash: {err:?}");
-            return
-          }
-        };
       let mut announce_recv = transport.recv_announces().await;
       // TODO: continue looping after link is created?
       while let Ok(announce) = announce_recv.recv().await {
@@ -109,7 +115,7 @@ impl Client {
       let mut out_link_events = transport.out_link_events();
       while let Ok(link_event) = out_link_events.recv().await {
         match link_event.event {
-          LinkEvent::Data(payload) => {
+          LinkEvent::Data(payload) => if link_event.address_hash == server_destination {
             log::trace!("link {} payload ({})", link_event.id, payload.len());
             match self.tun.send(payload.as_slice()).await {
               Ok(n) => log::trace!("tun sent {n} bytes"),
@@ -137,6 +143,7 @@ impl Server {
   pub fn new(config: ServerConfig) -> Result<Self, CreateAdapterError> {
     let tun = Tun::new(config.tun_ip)?;
     // add nat rule to masquerade as client
+    // iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o wlp3s0 -j MASQUERADE
     log::info!("adding nat masquerade for {}", config.client_subnet);
     let output = Command::new("iptables")
       .arg("-t")
@@ -162,8 +169,95 @@ impl Server {
     Ok(Server { config, tun })
   }
 
-  pub async fn run(&self) {
-    unimplemented!("TODO")
+  pub async fn run(&self, mut transport: Transport, id: PrivateIdentity) {
+    let in_destination = transport
+      .add_destination(id, DestinationName::new("rns_tun", "server")).await;
+    log::info!("created in destination: {}", in_destination.lock().await.desc.address_hash);
+    // send announces
+    let announce_loop = async || loop {
+      transport.send_announce(&in_destination, None).await;
+      tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    };
+    let link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> = Arc::new(tokio::sync::Mutex::new(None));
+    // tun loop
+    let tun_loop = async || while let Ok(bytes) = self.tun.read().await {
+      log::trace!("got tun bytes ({})", bytes.len());
+      let link_id = link_id.lock().await;
+      if let Some(link_id) = link_id.as_ref() {
+        log::trace!("sending on link ({})", link_id);
+        let link = transport.find_in_link(link_id).await.unwrap();
+        let link = link.lock().await;
+        let packet = link.data_packet(&bytes).unwrap();
+        transport.send_packet(packet).await;
+      }
+    };
+    // upstream link data
+    let link_loop = async || {
+      let client_destination =
+        match AddressHash::new_from_hex_string(self.config.client_destination.as_str()) {
+          Ok(dest) => dest,
+          Err(err) => {
+            log::error!("error parsing client destination hash: {err:?}");
+            return
+          }
+        };
+      let mut in_link_events = transport.in_link_events();
+      while let Ok(link_event) = in_link_events.recv().await {
+        match link_event.event {
+          LinkEvent::Data(payload) => if link_event.address_hash == client_destination {
+            log::trace!("link {} payload ({})", link_event.id, payload.len());
+            match self.tun.send(payload.as_slice()).await {
+              Ok(n) => log::trace!("tun sent {n} bytes"),
+              Err(err) => {
+                log::error!("tun error sending bytes: {err:?}");
+                break
+              }
+            }
+          }
+          LinkEvent::Activated => if link_event.address_hash == client_destination {
+            log::debug!("link activated{}", link_event.id);
+            let mut link_id = link_id.lock().await;
+            *link_id = Some(link_event.id);
+          }
+          LinkEvent::Closed => if link_event.address_hash == client_destination {
+            log::debug!("link closed {}", link_event.id)
+          }
+        }
+      }
+    };
+    tokio::select!{
+      _ = announce_loop() => log::info!("announce loop exited: shutting down"),
+      _ = tun_loop() => log::info!("tun loop exited: shutting down"),
+      _ = link_loop() => log::info!("link loop exited: shutting down"),
+      _ = tokio::signal::ctrl_c() => log::info!("got ctrl-c: shutting down")
+    }
+  }
+}
+
+impl Drop for Server {
+  fn drop(&mut self) {
+    // clean up nat rule
+    // iptables -t nat -D POSTROUTING -s 10.0.0.0/24 -o wlp3s0 -j MASQUERADE
+    log::info!("deleting nat masquerade for {}", self.config.client_subnet);
+    match Command::new("iptables")
+      .arg("-t")
+      .arg("nat")
+      .arg("-D")
+      .arg("POSTROUTING")
+      .arg("-s")
+      .arg(self.config.client_subnet.to_string())
+      .arg("-o")
+      .arg(self.config.outbound_interface.to_string())
+      .arg("-j")
+      .arg("MASQUERADE")
+      .output()
+    {
+      Ok(output) => if !output.status.success() {
+        log::error!("iptables delete nat masquerade command failed ({:?})", output.status.code());
+      }
+      Err(err) =>
+        log::error!("error deleting nat masquerade for {}: {err:?}", self.config.client_subnet)
+    }
   }
 }
 

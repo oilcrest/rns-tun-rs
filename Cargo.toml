@@ -2,12 +2,14 @@
 name = "rns-tun"
 description = "Reticulum TUN adapter"
 version = "0.1.0"
+license = "MIT"
 edition = "2024"
 
 [dependencies]
+clap = { version= "4.*", features= ["derive"] }
 env_logger = "0.11.*"
-log = "0.4.*"
 ipnet = { version = "2.*", features = ["serde"] }
+log = "0.4.*"
 nix = "0.23.*"
 rand_core = { version = "0.6.*", features = ["getrandom"] }
 riptun = { version = "0.1.*", default-features = false, features = ["tokio-impl"] }
@@ -25,4 +27,3 @@ name = "server"
 
 [[bin]]
 name = "client"
-

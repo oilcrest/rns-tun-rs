@@ -2,10 +2,11 @@
 
 > Reticulum TUN adapter
 
-## Running examples
+## Building and running
 
-Setting up the TUN adapter requires root permissions. Run examples with
-`sudo -E`:
+Setting up the TUN adapter requires root permissions:
 ```
-sudo -E cargo run --example server
+cargo build
+sudo ./target/debug/server -p 4242
+sudo ./target/debug/client -s 192.168.0.99:4242
 ```
