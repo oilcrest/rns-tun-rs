@@ -194,6 +194,7 @@ impl Server {
         let link = transport.find_in_link(link_id).await.unwrap();
         let link = link.lock().await;
         let packet = link.data_packet(&bytes).unwrap();
+        drop(link);
         transport.send_packet(packet).await;
       }
     };
